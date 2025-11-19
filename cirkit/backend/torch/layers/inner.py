@@ -370,7 +370,7 @@ class TorchSumLayer(TorchInnerLayer):
         # parameter, the same weight matrix will be used throughout all
         # the samples
         # we can exploit this to make the code less memory intensive
-        weight = weight.squeeze(1) # (F, K_o, H * Ki)
+        # weight = weight.squeeze(1) # (F, K_o, H * Ki)
 
         # apply the weight of the sum unit to each input
         # without reducing as a sum

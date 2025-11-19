@@ -110,7 +110,7 @@ class AddressBook(nn.Module, Generic[TorchModuleT], ABC):
     torch module.
     """
 
-    def __init__(self, entries: list[AddressBookEntry[TorchModuleT]]) -> None:
+    def __init__(self, entries: list[AddressBookEntry[TorchModuleT]],  fold_idx_info: FoldIndexInfo = None) -> None:
         """Initializes an address book.
 
         Args:
@@ -123,8 +123,10 @@ class AddressBook(nn.Module, Generic[TorchModuleT], ABC):
                 if it has more than one fold index tensor, or if the fold index tensor
                 is not a 1-dimensional tensor.
         """
+        self._fold_idx_info = fold_idx_info
         if not entries:
             raise ValueError("The list of address book entry must not be empty")
+        self._entries = entries
         last_entry = entries[-1]
         if last_entry.module is not None:
             raise ValueError(

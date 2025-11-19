@@ -236,8 +236,8 @@ class SamplingQuery(Query):
         if x is None:
             # if the circuit is the result of some operation then work on the original scope size
             num_variables = max(circuit_scope) + 1
-            state = torch.full(
-                (num_samples, num_variables), 0, dtype=torch.float, device=self._circuit.device
+            state = torch.zeros(
+                (num_samples, num_variables), dtype=torch.float, device=self._circuit.device
             )
             evidence_vars = state.clone().to(torch.bool)
         else:
