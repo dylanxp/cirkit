@@ -224,10 +224,14 @@ class SamplingQuery(Query):
         if (x is None) ^ (evidence_vars is None):
             assert ValueError("Both evidence and the evidence variables must be provided.")
 
-        if self._circuit.symbolic_operation:
-            circuit_scope = self._circuit.symbolic_operation.operands[0].scope
-        else:
-            circuit_scope = self._circuit.scope
+        # >>> Commented out until determining why this check is here
+        # TODO: understand why this is here
+        # if self._circuit.symbolic_operation:
+        #     circuit_scope = self._circuit.symbolic_operation.operands[0].scope
+        # else:
+        #     circuit_scope = self._circuit.scope
+        # <<<
+        circuit_scope = self._circuit.scope
 
         if x is None:
             # if the circuit is the result of some operation then work on the original scope size
