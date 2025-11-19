@@ -353,8 +353,8 @@ class TorchSumLayer(TorchInnerLayer):
         if negative:
             raise TypeError("Sampling in sum layers only works with positive weights.")
 
-        normalized = torch.allclose(torch.sum(weight, dim=-1), torch.ones(1, device=weight.device))
-        if not normalized:
+        normalized = torch.allclose(torch.sum(weight, dim=-1), torch.ones(1, device=weight.device)) 
+        if not normalized: # TODO this does not work.
             # normalize weight as a probability distribution
             eps = torch.finfo(weight.dtype).eps
             weight = (weight + eps) / (weight + eps).sum(dim=-1, keepdim=True)

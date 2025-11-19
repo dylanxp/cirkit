@@ -742,7 +742,7 @@ class TorchGaussianLayer(TorchExpFamilyLayer):
         # use the batch dimension as the dimension on which sampling is performed
         # (N, F, 1, K) -> (F, N, K)
         val = self.semiring.map_from(
-            dist.sample((num_samples,)).permute(1, 0, 2), LSESumSemiring
+            dist.sample((num_samples,)).permute(1, 0, 2), SumProductSemiring # TODO THIS IS BAD, FIX IT. ALL THE OTHER ABOVE
         )
         return val, val
 
