@@ -185,91 +185,107 @@ class IntegrateQuery(Query):
 
 
 class SamplingQuery(Query):
-    """The sampling query object."""
+    """Sample from the circuit, optionally using evidence."""
 
     def __init__(self, circuit: TorchCircuit) -> None:
-        """Initialize a sampling query object. Currently, only sampling from the joint distribution
-            is supported, i.e., sampling won't work in the case of circuits obtained by
-            marginalization, or by observing evidence. Conditional sampling is currently not
-            implemented.
+        """Initialize a sampling query object.
 
         Args:
             circuit: The circuit to sample from.
 
         Raises:
-            ValueError: If the circuit to sample from is not normalised.
+            ValueError: If the circuit is not smooth or not decomposable.
         """
         if not circuit.properties.smooth or not circuit.properties.decomposable:
             raise ValueError(
-                f"The circuit to sample from must be smooth and decomposable, "
-                f"but found {circuit.properties}"
+                f"MAP is supported by smooth and decomposable circuits, "
+                f"found {circuit.properties}"
             )
-        # TODO: add a check to verify the circuit is monotonic and normalized?
         super().__init__()
         self._circuit = circuit
 
-    def __call__(self, num_samples: int = 1) -> tuple[Tensor, list[Tensor]]:
-        """Sample a number of data points.
+    def __call__(
+        self, *, num_samples: int = 1, x: Tensor | None = None, evidence_vars: Tensor | None = None
+    ) -> tuple[Tensor, Tensor]:
+        """Sample from the circuit, optionally using an input evidence.
 
         Args:
-            num_samples: The number of samples to return.
-
-        Return:
-            A pair (samples, mixture_samples), consisting of (i) an assignment to the observed
-            variables the circuit is defined on, and (ii) the samples of the finitely-discrete
-            latent variables associated to the sum units. The samples (i) are returned as a
-            tensor of shape (num_samples, num_variables).
-
-        Raises:
-            ValueError: if the number of samples is not a positive number.
+            x: The input evidence of shape $(B, D)$, where $B$ is the batch size,
+                and $D$ is the number of variables.
+            evidence_vars: The variables to include in the evidence. It must be a subset of the
+                variables on which the circuit given in the constructor is defined on.
+                It must be a Tensor of shape (B, D) where B is the batch size and D is the number of
+                variables in the scope of the circuit. Its dtype should be torch.bool and have True
+                in the positions of random variables that are in the evidence and False elsewhere.
+        Returns:
+            The result of the sampling query, given as a tuple where the first element is the probability of
+            the sample value and the second value is the sample with shape $(B, D)$.
         """
-        if num_samples <= 0:
-            raise ValueError("The number of samples must be a positive number")
+        if (x is None) ^ (evidence_vars is None):
+            assert ValueError("Both evidence and the evidence variables must be provided.")
 
-        mixture_samples: list[Tensor] = []
-        # samples: (O, K, num_samples, D)
-        samples = self._circuit.evaluate(
+        if self._circuit.symbolic_operation:
+            circuit_scope = self._circuit.symbolic_operation.operands[0].scope
+        else:
+            circuit_scope = self._circuit.scope
+
+        if x is None:
+            # if the circuit is the result of some operation then work on the original scope size
+            num_variables = max(circuit_scope) + 1
+            state = torch.full(
+                (num_samples, num_variables), 0, dtype=torch.float, device=self._circuit.device
+            )
+            evidence_vars = state.clone().to(torch.bool)
+        else:
+            x = x.to(self._circuit.device)
+            state = x.clone()
+
+            if state.size(0) != 1:
+                raise ValueError("Only one tensor can be provided as evidence.")
+
+            state = state.tile((num_samples, 1))
+            evidence_vars = evidence_vars.tile((num_samples, 1))
+
+        samples_p, state = self._circuit.backtrack(
+            x=state,
             module_fn=functools.partial(
-                self._layer_fn,
-                num_samples=num_samples,
-                mixture_samples=mixture_samples,
+                SamplingQuery._layer_fn, num_samples=num_samples, evidence_vars=evidence_vars
             ),
         )
-        # samples: (num_samples, O, K, D)
-        samples = samples.permute(2, 0, 1, 3)
-        # TODO: fix for the case of multi-output circuits, i.e., O != 1 or K != 1
-        samples = samples[:, 0, 0]  # (num_samples, D)
-        return samples, mixture_samples
 
+        return samples_p, state
+
+    @staticmethod
     def _layer_fn(
-        self, layer: TorchLayer, *inputs: Tensor, num_samples: int, mixture_samples: list[Tensor]
-    ) -> Tensor:
-        # Sample from an input layer
-        if not inputs:
-            assert isinstance(layer, TorchInputLayer)
-            samples = layer.sample(num_samples)
-            samples = self._pad_samples(samples, layer.scope_idx)
-            mixture_samples.append(samples)
-            return samples
+        layer: TorchLayer, x: Tensor, *, num_samples: int, evidence_vars: Tensor
+    ) -> tuple[Tensor, Tensor]:
+        """Evaluate the layer in the usual feedforward way by randomly sampling.
 
-        # Sample through an inner layer
-        assert isinstance(layer, TorchInnerLayer)
-        samples, mix_samples = layer.sample(*inputs)
-        if mix_samples is not None:
-            mixture_samples.append(mix_samples)
-        return samples
+        Args:
+            layer (TorchLayer): The layer for the forward pass.
+            x (Tensor): The input to the layer.
+            evidence_vars (Tensor): A tensor that indicates which variables are set
+                as evidence.
 
-    def _pad_samples(self, samples: Tensor, scope_idx: Tensor) -> Tensor:
-        """Pads univariate samples to the size of the scope of the circuit (output dimension)
-        according to scope for compatibility in downstream inner nodes.
+        Returns:
+            tuple[Tensor, Tensor]: A tuple which contains the input sampled the layer
+                and its layer output.
         """
-        if scope_idx.shape[1] != 1:
-            raise NotImplementedError("Padding is only implemented for univariate samples")
+        if isinstance(layer, TorchInputLayer):
+            if layer.num_variables:
+                # sample from input layer
+                sample_idx, sampled_output = layer.sample(num_samples)
+                is_evidence = evidence_vars[:, layer.scope_idx].permute(1, 0, 2)
+                # select evidence state where specified
+                idx = torch.where(is_evidence, x, sample_idx)
+                # when evidence is used, select that layer otherwise marginalize
+                # the variable
+                output = torch.where(is_evidence, layer(x), layer.integrate())
+            else:
+                # layer has been marginalized
+                output = layer(x)
+                idx = torch.full_like(output, torch.nan)
+        else:
+            idx, output = layer.sample(x)
 
-        # padded_samples: (F, K, num_samples, D)
-        padded_samples = torch.zeros(
-            (*samples.shape, len(self._circuit.scope)), device=samples.device, dtype=samples.dtype
-        )
-        fold_idx = torch.arange(samples.shape[0], device=samples.device)
-        padded_samples[fold_idx, :, :, scope_idx.squeeze(dim=1)] = samples
-        return padded_samples
+        return idx, output

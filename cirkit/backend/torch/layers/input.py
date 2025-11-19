@@ -8,6 +8,7 @@ from torch import Tensor, distributions
 from cirkit.backend.torch.layers.base import TorchLayer
 from cirkit.backend.torch.parameters.parameter import TorchParameter
 from cirkit.backend.torch.semiring import LSESumSemiring, Semiring, SumProductSemiring
+from cirkit.backend.torch.utils import safelog
 
 
 class TorchInputLayer(TorchLayer, ABC):
@@ -420,18 +421,44 @@ class TorchCategoricalLayer(TorchExpFamilyLayer):
         logits = self.logits()
         return torch.sum(torch.logsumexp(logits, dim=3), dim=2).unsqueeze(dim=1)
 
-    def sample(self, num_samples: int = 1) -> Tensor:
-        # logits: (F, K, N)
+    # Lennert's code
+    # def sample(self, num_samples: int = 1) -> Tensor:
+    #     # logits: (F, K, N)
+    #     if self.logits is None:
+    #         assert self.probs is not None
+    #         logits = torch.log(self.probs())
+    #     else:
+    #         logits = self.logits()
+    #     dist = distributions.Categorical(logits=logits)
+    #     # samples: (N, F, K)
+    #     samples = dist.sample((num_samples,))
+    #     samples = samples.permute(1, 2, 0)  # (F, K, N)
+    #     return samples
+
+    # Nicolas's code
+    def sample(self, num_samples: int = 1) -> tuple[Tensor, Tensor]:
+        """Sample from the categorical layer.
+
+        Args:
+            num_samples (int, optional): Number of samples to draw. Defaults to 1.
+
+        Returns:
+            tuple[Tensor, Tensor]: A tuple where the first tensor is the sampled
+                state and the second value is the probability of that state.
+        """
+        # logits: (F, B, K, N)
         if self.logits is None:
             assert self.probs is not None
-            logits = torch.log(self.probs())
+            logits = safelog(self.probs())
         else:
             logits = self.logits()
         dist = distributions.Categorical(logits=logits)
-        # samples: (N, F, K)
-        samples = dist.sample((num_samples,))
-        samples = samples.permute(1, 2, 0)  # (F, K, N)
-        return samples
+
+        # use the batch dimension as the dimension on which sampling is performed
+        # (N, F, 1, K) -> (F, N, K)
+        idxs = dist.sample((num_samples,)).squeeze(-2).permute(1, 0, 2)
+        val = self.semiring.map_from(dist.log_prob(idxs), LSESumSemiring)
+        return idxs, val
 
 
 class TorchBinomialLayer(TorchExpFamilyLayer):
@@ -548,6 +575,20 @@ class TorchBinomialLayer(TorchExpFamilyLayer):
             device = self.logits.device
         return torch.zeros(size=(self.num_folds, 1, self.num_output_units), device=device)
 
+    # Lennert's code
+    # def sample(self, num_samples: int = 1) -> Tensor:
+    #     if self.logits is None:
+    #         assert self.probs is not None
+    #         probs = self.probs()  # (F, 1, K)
+    #         dist = distributions.Binomial(self.total_count, probs=probs)
+    #     else:
+    #         logits = self.logits()  # (F, 1, K)
+    #         dist = distributions.Binomial(self.total_count, logits=logits)
+    #     samples = dist.sample((num_samples,))  # (num_samples, F, K)
+    #     samples = samples.permute(1, 2, 0)  # (F, K, num_samples)
+    #     return samples
+
+    # Nicolas's code
     def sample(self, num_samples: int = 1) -> Tensor:
         if self.logits is None:
             assert self.probs is not None
@@ -677,12 +718,33 @@ class TorchGaussianLayer(TorchExpFamilyLayer):
         log_partition = self.log_partition()  # (F, K)
         return log_partition.unsqueeze(dim=1)  # (F, 1, K)
 
-    def sample(self, num_samples: int = 1) -> Tensor:
+    # Lennert's code
+    # def sample(self, num_samples: int = 1) -> Tensor:
+    #     dist = distributions.Normal(loc=self.mean(), scale=self.stddev())
+    #     # samples: (N, F, K)
+    #     samples = dist.sample((num_samples,))
+    #     samples = samples.permute(1, 2, 0)  # (F, K, N)
+    #     return samples
+
+    # Nicolas's code
+    def sample(self, num_samples: int = 1) -> tuple[Tensor, Tensor]:
+        """Sample from the gaussian layer.
+
+        Args:
+            num_samples (int, optional): Number of samples to draw. Defaults to 1.
+
+        Returns:
+            tuple[Tensor, Tensor]: A tuple where the first tensor is the sampled
+                value and the second value is the probability of that value.
+        """
         dist = distributions.Normal(loc=self.mean(), scale=self.stddev())
-        # samples: (N, F, K)
-        samples = dist.sample((num_samples,))
-        samples = samples.permute(1, 2, 0)  # (F, K, N)
-        return samples
+
+        # use the batch dimension as the dimension on which sampling is performed
+        # (N, F, 1, K) -> (F, N, K)
+        val = self.semiring.map_from(
+            dist.sample((num_samples,)).squeeze(-2).permute(1, 0, 2), LSESumSemiring
+        )
+        return val, val
 
 
 class TorchConstantValueLayer(TorchConstantLayer):
@@ -797,19 +859,44 @@ class TorchEvidenceLayer(TorchConstantLayer):
     def sub_modules(self) -> Mapping[str, TorchInputLayer]:
         return {"layer": self.layer}
 
+    # def forward(self, batch_size: int) -> Tensor:
+    #     obs = self.observation()  # (F, D)
+    #     obs = obs.unsqueeze(dim=1)  # (F, 1, D)
+    #     x = self.layer(obs)  # (F, 1, K)
+    #     return x.expand(x.shape[0], batch_size, x.shape[2])
+
+    # def sample(self, num_samples: int = 1) -> Tensor:
+    #     if self.num_variables != 1:
+    #         raise NotImplementedError("Sampling a multivariate Evidence layer is not implemented")
+    #     # Sampling an evidence layer translates to return the given observation
+    #     obs = self.observation()  # (F, D=1)
+    #     obs = obs.unsqueeze(dim=-1)  # (F, 1, 1)
+    #     return obs.expand(size=(-1, -1, self.num_output_units, num_samples))
+
+    # Nicolas's code
     def forward(self, batch_size: int) -> Tensor:
-        obs = self.observation()  # (F, D)
-        obs = obs.unsqueeze(dim=1)  # (F, 1, D)
-        x = self.layer(obs)  # (F, 1, K)
-        return x.expand(x.shape[0], batch_size, x.shape[2])
+        obs = self.observation()  # (F, B, D)
+
+        if obs.shape[1] != 1 and obs.shape[1] != batch_size:
+            raise ValueError(
+                f"The batch size of the observation ({obs.shape[1]})"
+                f"does not match batch_size {batch_size}."
+            )
+
+        x = self.layer(obs)
+
+        if x.shape[1] == 1:
+            x = x.expand(x.shape[0], batch_size, x.shape[2])
+
+        return x
 
     def sample(self, num_samples: int = 1) -> Tensor:
         if self.num_variables != 1:
             raise NotImplementedError("Sampling a multivariate Evidence layer is not implemented")
         # Sampling an evidence layer translates to return the given observation
         obs = self.observation()  # (F, D=1)
-        obs = obs.unsqueeze(dim=-1)  # (F, 1, 1)
-        return obs.expand(size=(-1, -1, self.num_output_units, num_samples))
+        obs = obs.unsqueeze(dim=-1).unsqueeze(dim=-1)  # (N, F, 1, 1)
+        return obs.expand(size=(num_samples, -1, -1, self.num_output_units))
 
 
 class TorchPolynomialLayer(TorchInputFunctionLayer):

@@ -1,13 +1,13 @@
 from collections.abc import Mapping
 from typing import Any
 
-import einops as E
+# import einops as E
 import torch
 from torch import Tensor
 
 from cirkit.backend.torch.layers.inner import TorchInnerLayer
 from cirkit.backend.torch.parameters.parameter import TorchParameter
-from cirkit.backend.torch.semiring import Semiring
+from cirkit.backend.torch.semiring import Semiring, SumProductSemiring
 
 
 class TorchTuckerLayer(TorchInnerLayer):
@@ -171,29 +171,81 @@ class TorchCPTLayer(TorchInnerLayer):
             "fbi,foi->fbo", inputs=(x,), operands=(weight,), dim=-1, keepdim=True
         )
 
+    # Lennert's code
+    # def sample(self, x: Tensor) -> tuple[Tensor, Tensor]:
+    #     weight = self.weight()
+    #     negative = torch.any(weight < 0.0)
+    #     if negative:
+    #         raise ValueError("Sampling only works with positive weights")
+    #     normalized = torch.allclose(torch.sum(weight, dim=-1), torch.ones(1, device=weight.device))
+    #     if not normalized:
+    #         raise ValueError("Sampling only works with a normalized parametrization")
+
+    #     # x: (F, H, K, num_samples, D)
+    #     x = torch.sum(x, dim=1)  # (F, K, num_samples, D)
+
+    #     num_samples = x.shape[2]
+    #     d = x.shape[3]
+
+    #     # mixing_distribution: (F, O, K)
+    #     mixing_distribution = torch.distributions.Categorical(probs=weight)
+    #     mixing_samples = mixing_distribution.sample((num_samples,))
+    #     mixing_samples = E.rearrange(mixing_samples, "n f k -> f k n")
+    #     mixing_indices = E.repeat(mixing_samples, "f k n -> f k n d", d=d)
+
+    #     x = torch.gather(x, dim=1, index=mixing_indices)
+    #     return x, mixing_samples
+
+    # Nicolas's code
     def sample(self, x: Tensor) -> tuple[Tensor, Tensor]:
+        r"""Sample from a CP-T sum layer based on the weight paramerters.
+
+        The sampled index is given in raveled form. Given the index $i$ it is possible
+        to recover the index of the sampled input element as $i // I$ and
+        the unit of that element as $i mod I$ where $I$ is the number of inputs of this
+        layer (i.e. the number of units of each element that is input to this layer).
+
+        Args:
+            x (Tensor): The input to the layer.
+
+        Returns:
+            tuple[Tensor, Tensor]: A tuple where the first tensor is the raveled index
+                of the sampled input to the layer and the second value is the input weighted
+                by that element value.
+        """
+        # weight: (F, B, K_o, H * Ki)
         weight = self.weight()
         negative = torch.any(weight < 0.0)
         if negative:
-            raise ValueError("Sampling only works with positive weights")
+            raise TypeError("Sampling in sum layers only works with positive weights.")
+
         normalized = torch.allclose(torch.sum(weight, dim=-1), torch.ones(1, device=weight.device))
         if not normalized:
-            raise ValueError("Sampling only works with a normalized parametrization")
+            # normalize weight as a probability distribution
+            eps = torch.finfo(weight.dtype).eps
+            weight = (weight + eps) / (weight + eps).sum(dim=-1, keepdim=True)
 
-        # x: (F, H, K, num_samples, D)
-        x = torch.sum(x, dim=1)  # (F, K, num_samples, D)
+        # x: (F, B, Ki)
+        x = self.semiring.prod(x, dim=1, keepdim=False)
 
-        num_samples = x.shape[2]
-        d = x.shape[3]
+        # weight: (F, B, K_o, Ki)
+        weight = self.weight()
 
-        # mixing_distribution: (F, O, K)
-        mixing_distribution = torch.distributions.Categorical(probs=weight)
-        mixing_samples = mixing_distribution.sample((num_samples,))
-        mixing_samples = E.rearrange(mixing_samples, "n f k -> f k n")
-        mixing_indices = E.repeat(mixing_samples, "f k n -> f k n d", d=d)
+        # intermediary weighted results are computed in the sum product semiring
+        x = SumProductSemiring.map_from(x, self.semiring)
+        # weighted_x: (F, B, H * Ki, Ko)
+        weighted_x = self.semiring.map_from(
+            torch.einsum("fbi,fboi->fboi", x, weight), SumProductSemiring
+        )
 
-        x = torch.gather(x, dim=1, index=mixing_indices)
-        return x, mixing_samples
+        # sample indexes based on weight
+        dist = torch.distributions.Categorical(probs=weight)
+        idxs = dist.sample((x.size(1),)).squeeze(-2).permute(1, 0, 2)
+        # gather the weighted value
+        # TODO: find a better way rather than squeezing and unsqueezing
+        val = torch.gather(weighted_x, index=idxs.unsqueeze(-1), dim=-1).squeeze(-1)
+
+        return idxs, val
 
 
 class TorchTensorDotLayer(TorchInnerLayer):

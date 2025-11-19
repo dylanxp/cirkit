@@ -1,3 +1,4 @@
+from collections import deque
 from collections.abc import Callable, Iterator, Mapping, Sequence
 
 import torch
@@ -13,7 +14,12 @@ from cirkit.backend.torch.graph.modules import (
     FoldIndexInfo,
     TorchDiAcyclicGraph,
 )
-from cirkit.backend.torch.layers import TorchInputLayer, TorchLayer
+from cirkit.backend.torch.layers import (
+    TorchHadamardLayer,
+    TorchInputLayer,
+    TorchLayer,
+    TorchSumLayer,
+)
 from cirkit.symbolic.circuit import StructuralProperties
 from cirkit.utils.scope import Scope
 
@@ -26,6 +32,81 @@ class LayerAddressBook(AddressBook[TorchLayer]):
     where each entry stores the information needed to gather the inputs to each (possibly folded)
     circuit layer.
     """
+
+    def backtrack(self, state, module_idxs: list[Tensor]) -> Tensor:
+        # entry queue holds a tuple of the form:
+        # (module address book id, idxs of module, previous module address book id)
+        entry_queue = deque([(len(self._entries) - 1, None, None, None)])
+        while entry_queue:
+            entry_id, p_fold_idx, p_batch_idx, p_unit_idx = entry_queue.popleft()
+
+            entry = self._entries[entry_id]
+            module = entry.module
+            in_module_ids = entry.in_module_ids
+
+            if in_module_ids:
+                in_modules_ids_h = in_module_ids[0]
+
+                if module is None:
+                    entry_queue.extend(
+                        [
+                            (
+                                next_m_id,
+                                0,
+                                torch.arange(state.size(0), device=state.device),
+                                0,
+                            )
+                            for next_m_id in in_modules_ids_h
+                        ]
+                    )
+                    continue
+
+                match module:
+                    case TorchSumLayer():
+                        in_fold_info = self._fold_idx_info.in_fold_idx[entry_id][p_fold_idx]
+
+                        # retrieve arity and unit indexes by unraveling each batch
+                        raveled_idxs = module_idxs[entry_id][p_fold_idx, p_batch_idx, p_unit_idx]
+                        arity_idxs, unit_idxs = torch.unravel_index(
+                            raveled_idxs, (module.arity, module.num_input_units)
+                        )
+
+                        for arity_i, (next_module_id, fold_idx) in enumerate(in_fold_info):
+                            batch_idxs_at_arity = arity_idxs == arity_i
+
+                            if batch_idxs_at_arity.any():
+                                # specify which states are interested in the input module i
+                                # and for each state which unit they are interested in
+                                entry_queue.append(
+                                    (
+                                        next_module_id,
+                                        fold_idx,
+                                        p_batch_idx[batch_idxs_at_arity],
+                                        unit_idxs[batch_idxs_at_arity],
+                                    )
+                                )
+
+                        continue
+                    case _:
+                        in_fold_info = self._fold_idx_info.in_fold_idx[entry_id][p_fold_idx]
+                        # for product layers we visit all the children
+                        for next_module_id, fold_idx in in_fold_info:
+                            entry_queue.append((next_module_id, fold_idx, p_batch_idx, p_unit_idx))
+                        continue
+            # catch the case where we are at an input unit
+            elif module is not None:
+                assert isinstance(module, TorchInputLayer)
+                # set state
+                input_idxs = module_idxs[entry_id]
+
+                # check that the module is not a marginalized input
+                # in that case ignore the update of this element
+                if module.scope_idx.nelement() > 0:
+                    state[p_batch_idx, module.scope_idx[p_fold_idx]] = input_idxs[
+                        p_fold_idx, 0 if input_idxs.size(1) == 1 else p_batch_idx, p_unit_idx
+                    ].to(state.dtype)
+
+        return state
 
     def lookup(
         self, module_outputs: list[Tensor], *, in_graph: Tensor | None = None
