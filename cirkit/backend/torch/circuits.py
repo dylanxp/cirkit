@@ -184,6 +184,18 @@ class TorchCircuit(TorchDiAcyclicGraph[TorchLayer]):
             The structural properties.
         """
         return self._properties
+    
+    @property
+    def device(self) -> torch.device:
+        """Retrieve the device on which the circuit is loaded.
+
+        Returns:
+            torch.device: The device.
+        """
+        try:
+            return next(self.parameters()).device
+        except StopIteration:
+            return torch.device("cpu")
 
     @property
     def layers(self) -> Sequence[TorchLayer]:

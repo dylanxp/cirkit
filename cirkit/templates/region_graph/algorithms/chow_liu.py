@@ -16,6 +16,7 @@ def ChowLiuTree(
     num_categories: int | None = None,
     num_bins: int | None = None,
     as_region_graph: bool = True,
+    bin_for_mi: int | None = None,
 ) -> np.ndarray | RegionGraph:
     """Learns a Chow-Liu Tree and returns it either as a
     list of predecessors (Bayesian net) or as region graph (HCLT).
@@ -54,8 +55,11 @@ def ChowLiuTree(
     assert data.ndim == 2
     assert root is None or -1 < root < data.size(-1)
     if isinstance(input_type, list):
+        is_categorical_mask = [name == "categorical" for name in input_type]
         mutual_info = _heterogeneous_mutual_info(
-            data, is_categorical_mask=[name == "categorical" for name in input_type]
+            data, is_categorical_mask=is_categorical_mask
+        ) if bin_for_mi is None else _heterogeneous_mutual_info_bin(
+            data, is_categorical_mask=is_categorical_mask, bins=bin_for_mi
         )
     elif input_type == "categorical":
         if num_bins is not None:
@@ -151,8 +155,25 @@ def _categorical_mutual_info(
     return (joints * (joints.log() - outers.log())).sum(dim=(2, 3)).fill_diagonal_(0)
 
 
+def _heterogeneous_mutual_info_bin(
+    data: Tensor, is_categorical_mask: list[bool], bins: int = 10
+) -> Tensor:
+
+    is_categorical = torch.tensor(is_categorical_mask, dtype=torch.bool, device=data.device)
+    continuous_subset = torch.where(~is_categorical)[0]
+
+    x = data[:,continuous_subset].clone()
+    x = (x - x.min(dim=0, keepdim=True).values)*bins / x.max(dim=0, keepdim=True).values
+    x = x.round()
+
+    discretized_data = data.clone()
+    discretized_data[:,continuous_subset] = x
+
+    return _categorical_mutual_info(discretized_data.long()).float()
+
+
 def _heterogeneous_mutual_info(
-    data: Tensor, is_categorical_mask: list[bool], normalize: bool = True
+    data: Tensor, is_categorical_mask: list[bool], normalize: bool = False
 ) -> Tensor:
     """Computes the mutual information (MI) matrix for heterogeneous data
     (both discrete/categorical data and continuous).

@@ -96,7 +96,13 @@ def image_data(
         "poon-domingos",
     ]:
         raise ValueError(f"Unknown region graph called {region_graph}")
-    if input_layer not in ["categorical", "binomial", "embedding", "gaussian"]:
+    # if input_layer not in ["categorical", "binomial", "embedding", "gaussian"]:
+    if input_layer not in [
+        "categorical",
+        "binomial",
+        "embedding",
+        "gaussian"
+    ]:
         raise ValueError(f"Unknown input layer called {input_layer}")
 
     # Construct the image-tailored region graph
@@ -174,6 +180,7 @@ def tabular_data(
     num_classes: int = 1,
     sum_weight_param: Parameterization | None = None,
     use_mixing_weights: bool = True,
+    bin_for_mi: int | None = None,
 ) -> Circuit:
     """
     Constructs a symbolic circuit whose structure is tailored for tabular data sets,
@@ -207,7 +214,7 @@ def tabular_data(
         num_input_units:
             Number of parallel input units (e.g. mixtures/components) per feature.
         sum_product_layer:
-            Which inner sum/product decomposition to use. E.g. `"cp"`, `"cp-t"`, or `"tucker"`.
+            Which inner sum/product decomposition to use. E.g. `"cp"`, `"cpt"`, or `"tucker"`.
         num_sum_units:
             Number of sum (or mixing) units in each sum layer.
         num_classes:
@@ -260,6 +267,7 @@ def tabular_data(
                     else None
                 ),
                 as_region_graph=True,
+                bin_for_mi=bin_for_mi,
             )
             if not isinstance(rg_result, RegionGraph):
                 raise ValueError(f"Expected a RegionGraph, but got {type(rg_result).__name__}.")
@@ -301,5 +309,4 @@ def tabular_data(
         num_input_units=num_input_units,
         num_sum_units=num_sum_units,
         num_classes=num_classes,
-        factorize_multivariate=True,
     )
