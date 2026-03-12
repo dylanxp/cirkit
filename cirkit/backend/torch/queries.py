@@ -258,7 +258,7 @@ class SamplingQuery(Query):
             assert len(inputs) <= 2
             samples, ev_score = layer.sample_and_eval_evidence(num_samples, *inputs)
             samples = self._pad_samples(samples, layer.scope_idx, value=layer.semiring.multiplicative_identity)
-            mixture_samples.append(samples)
+            # mixture_samples.append(samples)
             if len(inputs) == 2:
                 ev_score = ev_score.expand_as(samples[...,-1])
                 assert ev_score.shape == samples.shape[:-1]
@@ -273,8 +273,8 @@ class SamplingQuery(Query):
         samples, *args = layer.sample(*inputs)
         if len(args) == 2:  # Sum Layer
             ev_score, mix_samples = args
-            if mix_samples is not None:
-                mixture_samples.append(mix_samples)        
+            # if mix_samples is not None:
+            #     mixture_samples.append(mix_samples)        
         else:
             ev_score = args[0]
 
