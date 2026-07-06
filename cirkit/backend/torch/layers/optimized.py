@@ -5,7 +5,7 @@ import einops as E
 import torch
 from torch import Tensor
 
-from cirkit.backend.torch.layers.inner import TorchInnerLayer
+from cirkit.backend.torch.layers.inner import ArityBranch, BackwardSelection, TorchInnerLayer
 from cirkit.backend.torch.parameters.parameter import TorchParameter
 from cirkit.backend.torch.semiring import Semiring, SumProductSemiring
 
@@ -41,7 +41,11 @@ class TorchTuckerLayer(TorchInnerLayer):
         if arity < 2:
             raise ValueError("The arity should be at least 2")
         super().__init__(
-            num_input_units, num_output_units, arity=arity, semiring=semiring, num_folds=num_folds
+            num_input_units,
+            num_output_units,
+            arity=arity,
+            semiring=semiring,
+            num_folds=num_folds,
         )
         if not self._valid_weight_shape(weight):
             raise ValueError(
@@ -86,7 +90,9 @@ class TorchTuckerLayer(TorchInnerLayer):
         # x: (F, H, B, Ki)
         # weight: (F, Ko, Ki ** arity) -> (F, Ko, Ki, ..., Ki)
         weight = self.weight().view(
-            -1, self.num_output_units, *(self.num_input_units for _ in range(self.arity))
+            -1,
+            self.num_output_units,
+            *(self.num_input_units for _ in range(self.arity)),
         )
         return self.semiring.einsum(
             self._einsum,
@@ -163,7 +169,7 @@ class TorchCPTLayer(TorchInnerLayer):
         return {"weight": self.weight}
 
     def forward(self, x: Tensor) -> Tensor:
-        # x: (F, B, Ki)
+        # x: (F, H, B, Ki) -> (F, B, Ki)
         x = self.semiring.prod(x, dim=1, keepdim=False)
         # weight: (F, Ko, Ki)
         weight = self.weight()
@@ -215,11 +221,20 @@ class TorchCPTLayer(TorchInnerLayer):
             
         return x, ev_score, mixing_samples
 
+    def backward_sample(self, selection: BackwardSelection) -> list[ArityBranch]:
+        # CPT = fused product + sum: sample a unit, broadcast it to every arity slot.
+        sample_ids, folds, units = selection
+        weight = self.weight()
+        param_folds = folds % weight.shape[0]
+        selected_weights = weight[param_folds, units]  # (P, Ki)
+        unit_within = torch.distributions.Categorical(probs=selected_weights).sample()  # (P,)
+        return [ArityBranch(sample_ids, folds, unit_within) for _ in range(self.arity)]
+
 
 class TorchTensorDotLayer(TorchInnerLayer):
     r"""The tensor dot layer performs the following operations.
     Let $\mathbf{x}$ be an input tensor of shape $(B, K_i)$, where $B$ is the batch size,
-    and $K_i$ is the number of input uits. The tensor dot layer firstly reshapes as the tensor
+    and $K_i$ is the number of input units. The tensor dot layer firstly reshapes as the tensor
     $\mathcal{Z}$ having shape $(B, K_j, K_q)$, where $K_i = K_jK_q$. Then, it computes the
     tensor $\mathcal{S}$ of shape $(B, K_q, K_k)$ as follows:
 
@@ -289,7 +304,10 @@ class TorchTensorDotLayer(TorchInnerLayer):
 
     @property
     def config(self) -> Mapping[str, Any]:
-        return {"num_input_units": self.num_input_units, "num_output_units": self.num_output_units}
+        return {
+            "num_input_units": self.num_input_units,
+            "num_output_units": self.num_output_units,
+        }
 
     @property
     def params(self) -> Mapping[str, TorchParameter]:

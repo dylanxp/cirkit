@@ -5,7 +5,11 @@ import torch
 
 from cirkit.backend.compiler import LayerCompilationSign
 from cirkit.backend.torch.layers.base import TorchLayer
-from cirkit.backend.torch.layers.inner import TorchHadamardLayer, TorchKroneckerLayer, TorchSumLayer
+from cirkit.backend.torch.layers.inner import (
+    TorchHadamardLayer,
+    TorchKroneckerLayer,
+    TorchSumLayer,
+)
 from cirkit.backend.torch.layers.input import (
     TorchBinomialLayer,
     TorchCategoricalLayer,
@@ -114,7 +118,7 @@ def compile_polynomial_layer(
     )
 
 
-def compile_hadamard_layer(compiler: "TorchCompiler", sl: KroneckerLayer) -> TorchHadamardLayer:
+def compile_hadamard_layer(compiler: "TorchCompiler", sl: HadamardLayer) -> TorchHadamardLayer:
     return TorchHadamardLayer(sl.num_input_units, arity=sl.arity, semiring=compiler.semiring)
 
 
@@ -149,7 +153,9 @@ def compile_evidence_layer(compiler: "TorchCompiler", sl: EvidenceLayer) -> Torc
     layer = compiler.compile_layer(sl.layer)
     observation = compiler.compile_parameter(sl.observation)
     return TorchEvidenceLayer(
-        cast(TorchInputLayer, layer), observation=observation, semiring=compiler.semiring
+        cast(TorchInputLayer, layer),
+        observation=observation,
+        semiring=compiler.semiring,
     )
 
 
