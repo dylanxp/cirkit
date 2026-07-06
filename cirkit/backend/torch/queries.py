@@ -342,7 +342,9 @@ def _backward_sample(circuit: TorchCircuit, num_samples: int) -> Tensor:
         torch.zeros(num_samples, dtype=torch.long, device=device),
     )
 
-    samples = torch.zeros(num_samples, circuit.num_variables, dtype=torch.long, device=device)
+    # Original implementation assumed all categorical inputs; here we use floats
+    # samples = torch.zeros(num_samples, circuit.num_variables, dtype=torch.long, device=device)
+    samples = torch.zeros(num_samples, circuit.num_variables, dtype=torch.float32, device=device)
 
     for entry_idx in range(len(entries) - 2, -1, -1):
         entry = entries[entry_idx]
