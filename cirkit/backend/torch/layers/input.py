@@ -497,25 +497,7 @@ class TorchCategoricalLayer(TorchExpFamilyLayer):
         selected_logits = logits[param_folds, units]  # (P, C)
         sampled = distributions.Categorical(logits=selected_logits).sample()  # (P,)
         var_indices = self.scope_idx[folds, 0]
-        samples[sample_ids, var_indices] = sampled
-
-    def backward_sample(
-        self,
-        selection: tuple[Tensor, Tensor, Tensor],
-        samples: Tensor,
-    ) -> None:
-        sample_ids, folds, units = selection
-        if self.logits is None:
-            assert self.probs is not None
-            logits = torch.log(self.probs())
-        else:
-            logits = self.logits()
-        # Shared-parameter layers replicate `logits` across folds — collapse fold index.
-        param_folds = folds % logits.shape[0]
-        selected_logits = logits[param_folds, units]  # (P, C)
-        sampled = distributions.Categorical(logits=selected_logits).sample()  # (P,)
-        var_indices = self.scope_idx[folds, 0]
-        samples[sample_ids, var_indices] = sampled
+        samples[sample_ids, var_indices] = sampled.to(dtype=samples.dtype)  # Cast to dtype
 
 
 class TorchBinomialLayer(TorchExpFamilyLayer):
@@ -765,6 +747,22 @@ class TorchGaussianLayer(TorchExpFamilyLayer):
         dist = distributions.Normal(loc=self.mean(), scale=self.stddev())
         samples = dist.sample(sample_shape) # samples: (sample_shape, F, K)
         return samples
+    
+    def backward_sample(
+        self,
+        selection: tuple[Tensor, Tensor, Tensor],
+        samples: Tensor,
+    ) -> None:
+        sample_ids, folds, units = selection
+
+        means = self.mean()
+        stddevs = self.stddev()
+        param_folds = folds % means.shape[0]
+        selected_means = means[param_folds, units] # (P, C)
+        selected_stddevs = stddevs[param_folds, units] # (P, C)
+        sampled = distributions.Normal(loc=selected_means, scale=selected_stddevs).sample() # (P,)
+        var_indices = self.scope_idx[folds, 0]
+        samples[sample_ids, var_indices] = sampled
 
 
 class TorchConstantValueLayer(TorchConstantLayer):
